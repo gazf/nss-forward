@@ -6,19 +6,19 @@ musl には glibc 向け NSS モジュール (`nss_ldap` 等) が動作しない
 
 ## アーキテクチャ
 
-```
-[Alpine コンテナ]               [Deno コンテナ]          [LDAP サーバー]
-getpwnam("alice")
-    ↓ LD_PRELOAD
-libnss_forward.so
-    ↓ HTTP GET /passwd/alice
-    ─────────────────────────→  Deno HTTP Server
-                                     ↓ LDAPv3 Search
-                                     ──────────────→  :389
-                                ← alice:x:1001:100:...
-    ←─────────────────────────  alice:x:1001:100:Alice:/home/alice:/bin/sh
-    ↓ strsep でパース
-struct passwd を返す
+```mermaid
+sequenceDiagram
+    participant App as Alpine コンテナ
+    participant SO as libnss_forward.so<br/>(LD_PRELOAD)
+    participant Deno as Deno サイドカー
+    participant LDAP as LDAP サーバー
+
+    App->>SO: getpwnam("alice")
+    SO->>Deno: GET /passwd/alice
+    Deno->>LDAP: LDAPv3 Search (uid=alice)
+    LDAP-->>Deno: alice:x:1001:100:...
+    Deno-->>SO: alice:x:1001:100:Alice:/home/alice:/bin/sh
+    SO-->>App: struct passwd
 ```
 
 ## コンポーネント
