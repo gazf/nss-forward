@@ -318,7 +318,7 @@ struct passwd *getpwnam(const char *name)
             return NULL;
         return &pw_result;
     }
-    if (status == 404)
+    if (status != 200)
         return fallback_getpwnam(name);
     return NULL;
 }
@@ -337,9 +337,7 @@ int getpwnam_r(const char *name, struct passwd *pwd,
         *result = pwd;
         return 0;
     }
-    if (status == 404)
-        return fallback_getpwnam_r(name, pwd, buf, buflen, result);
-    *result = NULL; return ENOENT;
+    return fallback_getpwnam_r(name, pwd, buf, buflen, result);
 }
 
 /* ------------------------------------------------------------------ */
@@ -356,7 +354,7 @@ struct passwd *getpwuid(uid_t uid)
             return NULL;
         return &pw_result;
     }
-    if (status == 404)
+    if (status != 200)
         return fallback_getpwuid(uid);
     return NULL;
 }
@@ -375,9 +373,7 @@ int getpwuid_r(uid_t uid, struct passwd *pwd,
         *result = pwd;
         return 0;
     }
-    if (status == 404)
-        return fallback_getpwuid_r(uid, pwd, buf, buflen, result);
-    *result = NULL; return ENOENT;
+    return fallback_getpwuid_r(uid, pwd, buf, buflen, result);
 }
 
 /* ------------------------------------------------------------------ */
@@ -394,7 +390,7 @@ struct group *getgrnam(const char *name)
             return NULL;
         return &gr_result;
     }
-    if (status == 404)
+    if (status != 200)
         return fallback_getgrnam(name);
     return NULL;
 }
@@ -413,9 +409,7 @@ int getgrnam_r(const char *name, struct group *grp,
         *result = grp;
         return 0;
     }
-    if (status == 404)
-        return fallback_getgrnam_r(name, grp, buf, buflen, result);
-    *result = NULL; return ENOENT;
+    return fallback_getgrnam_r(name, grp, buf, buflen, result);
 }
 
 /* ------------------------------------------------------------------ */
@@ -432,7 +426,7 @@ struct group *getgrgid(gid_t gid)
             return NULL;
         return &gr_result;
     }
-    if (status == 404)
+    if (status != 200)
         return fallback_getgrgid(gid);
     return NULL;
 }
@@ -451,7 +445,5 @@ int getgrgid_r(gid_t gid, struct group *grp,
         *result = grp;
         return 0;
     }
-    if (status == 404)
-        return fallback_getgrgid_r(gid, grp, buf, buflen, result);
-    *result = NULL; return ENOENT;
+    return fallback_getgrgid_r(gid, grp, buf, buflen, result);
 }

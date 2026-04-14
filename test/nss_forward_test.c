@@ -25,10 +25,14 @@
  * テスト用の固定レスポンスを path に応じて返す。
  * 実際のネットワーク呼び出しは一切行わない。
  */
+/* 1 にセットすると全リクエストでネットワークエラー (-1) を返す */
+static int mock_network_error = 0;
+
 static int http_get(const char *base_url, const char *path,
                     char *buf, size_t buf_len)
 {
     (void)base_url;
+    if (mock_network_error) return -1;
     const char *body = NULL;
 
     if (strcmp(path, "/passwd/alice") == 0)
@@ -81,15 +85,15 @@ static int g_fail = 0;
 /* ------------------------------------------------------------------ */
 
 /*
- * HTTP 404 のときフォールバック関数が呼ばれることを検証する。
+ * 404 またはネットワークエラー (-1) のときフォールバック関数が呼ばれることを検証する。
  * テストモードの fallback は nss_forward_fallback_count をインクリメントして
  * NULL / ENOENT を返すスタブ。実運用では dlsym(RTLD_NEXT) が /etc/passwd を読む。
  */
 extern int nss_forward_fallback_count;
 
-static void test_fallback_on_404(void)
+static void test_fallback(void)
 {
-    puts("404 フォールバック");
+    puts("フォールバック (404)");
 
     struct passwd pw;
     char buf[1024];
@@ -128,6 +132,44 @@ static void test_fallback_on_404(void)
     nss_forward_fallback_count = 0;
     getgrgid_r(0, &gr, buf, sizeof(buf), &grp);
     CHECK(nss_forward_fallback_count == 1, "getgrgid_r: 404 で fallback 呼び出し");
+
+    puts("フォールバック (ネットワークエラー)");
+
+    mock_network_error = 1;
+
+    nss_forward_fallback_count = 0;
+    getpwnam("alice");
+    CHECK(nss_forward_fallback_count == 1, "getpwnam: ネットワークエラーで fallback 呼び出し");
+
+    nss_forward_fallback_count = 0;
+    getpwuid(1001);
+    CHECK(nss_forward_fallback_count == 1, "getpwuid: ネットワークエラーで fallback 呼び出し");
+
+    nss_forward_fallback_count = 0;
+    getpwnam_r("alice", &pw, buf, sizeof(buf), &result);
+    CHECK(nss_forward_fallback_count == 1, "getpwnam_r: ネットワークエラーで fallback 呼び出し");
+
+    nss_forward_fallback_count = 0;
+    getpwuid_r(1001, &pw, buf, sizeof(buf), &result);
+    CHECK(nss_forward_fallback_count == 1, "getpwuid_r: ネットワークエラーで fallback 呼び出し");
+
+    nss_forward_fallback_count = 0;
+    getgrnam("staff");
+    CHECK(nss_forward_fallback_count == 1, "getgrnam: ネットワークエラーで fallback 呼び出し");
+
+    nss_forward_fallback_count = 0;
+    getgrgid(100);
+    CHECK(nss_forward_fallback_count == 1, "getgrgid: ネットワークエラーで fallback 呼び出し");
+
+    nss_forward_fallback_count = 0;
+    getgrnam_r("staff", &gr, buf, sizeof(buf), &grp);
+    CHECK(nss_forward_fallback_count == 1, "getgrnam_r: ネットワークエラーで fallback 呼び出し");
+
+    nss_forward_fallback_count = 0;
+    getgrgid_r(100, &gr, buf, sizeof(buf), &grp);
+    CHECK(nss_forward_fallback_count == 1, "getgrgid_r: ネットワークエラーで fallback 呼び出し");
+
+    mock_network_error = 0;
 }
 
 static void test_getpwnam(void)
@@ -292,7 +334,7 @@ int main(void)
     test_getgrnam_r();
     test_getgrgid_r();
     test_empty_group_members();
-    test_fallback_on_404();
+    test_fallback();
 
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
