@@ -12,7 +12,7 @@ WORKDIR /build
 COPY src/nss_forward.c ./
 
 RUN gcc -shared -fPIC -O2 -Wall -Wextra \
-      -o libnss_forward.so nss_forward.c \
+      -o libnss_forward.so nss_forward.c -ldl \
     && strip libnss_forward.so
 
 # Export artifact via scratch stage for --output

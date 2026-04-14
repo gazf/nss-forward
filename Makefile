@@ -14,7 +14,7 @@ all: build
 build: $(SO)
 
 $(SO): $(SO_SRC)
-	$(CC) $(CFLAGS) -shared -fPIC -o $@ $<
+	$(CC) $(CFLAGS) -shared -fPIC -o $@ $< -ldl
 
 $(TEST_C_BIN): $(TEST_C_SRC) $(SO_SRC)
 	$(CC) $(CFLAGS) -DNSS_FORWARD_TESTING -o $@ $<

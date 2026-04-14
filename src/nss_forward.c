@@ -3,9 +3,10 @@
  *
  * Overrides getpwnam/getpwuid/getgrnam/getgrgid and their _r variants.
  * Makes an HTTP GET to NSS_PROXY_URL and parses the passwd/group line.
+ * On HTTP 404, falls back to the original libc implementation (/etc/passwd).
  *
  * Build:
- *   gcc -shared -fPIC -O2 -o libnss_forward.so nss_forward.c
+ *   gcc -shared -fPIC -O2 -o libnss_forward.so nss_forward.c -ldl
  */
 
 #define _GNU_SOURCE
@@ -28,8 +29,10 @@
 
 /*
  * Perform HTTP GET <path> against the host:port extracted from base_url.
- * Returns body length on success, -1 on error.
- * buf must be at least HTTP_BUF bytes.
+ * Returns the HTTP status code (e.g. 200, 404) on a valid response,
+ * or -1 on network/protocol error.
+ * On 200, buf is filled with the response body (null-terminated,
+ * trailing newlines stripped). buf must be at least HTTP_BUF bytes.
  *
  * When NSS_FORWARD_TESTING is defined this function is omitted so the
  * test translation unit can supply its own mock instead.
@@ -98,26 +101,29 @@ static int http_get(const char *base_url, const char *path,
     close(fd);
     raw[total] = '\0';
 
-    /* Check status 200 */
+    /* Parse status code */
     if (strncmp(raw, "HTTP/", 5) != 0) return -1;
     char *sp = strchr(raw, ' ');
-    if (!sp || atoi(sp + 1) != 200) return -1;
+    if (!sp) return -1;
+    int status = atoi(sp + 1);
 
-    /* Extract body (after \r\n\r\n) */
-    char *body = strstr(raw, "\r\n\r\n");
-    if (!body) return -1;
-    body += 4;
+    /* Extract body only on 200 */
+    if (status == 200) {
+        char *body = strstr(raw, "\r\n\r\n");
+        if (!body) return -1;
+        body += 4;
 
-    size_t blen = strlen(body);
-    if (blen >= buf_len) blen = buf_len - 1;
-    memcpy(buf, body, blen);
-    buf[blen] = '\0';
+        size_t blen = strlen(body);
+        if (blen >= buf_len) blen = buf_len - 1;
+        memcpy(buf, body, blen);
+        buf[blen] = '\0';
 
-    /* Strip trailing newline */
-    while (blen > 0 && (buf[blen-1] == '\n' || buf[blen-1] == '\r'))
-        buf[--blen] = '\0';
+        /* Strip trailing newline */
+        while (blen > 0 && (buf[blen-1] == '\n' || buf[blen-1] == '\r'))
+            buf[--blen] = '\0';
+    }
 
-    return (int)blen;
+    return status;
 }
 #endif /* NSS_FORWARD_TESTING */
 
@@ -210,6 +216,95 @@ static __thread struct group  gr_result;
 static char http_body[HTTP_BUF];
 
 /* ------------------------------------------------------------------ */
+/* /etc/passwd fallbacks via dlsym(RTLD_NEXT, ...)                    */
+/*                                                                      */
+/* On HTTP 404 the entry is not in LDAP; delegate to the next          */
+/* implementation in the dynamic linker chain (libc's /etc/passwd).    */
+/* In test mode all fallbacks are no-ops — the mock http_get controls  */
+/* found/not-found without involving the real libc.                    */
+/* ------------------------------------------------------------------ */
+
+#ifndef NSS_FORWARD_TESTING
+#include <dlfcn.h>
+
+static struct passwd *fallback_getpwnam(const char *n) {
+    struct passwd *(*f)(const char *) = dlsym(RTLD_NEXT, "getpwnam");
+    return f ? f(n) : NULL;
+}
+static int fallback_getpwnam_r(const char *n, struct passwd *p,
+                                char *b, size_t l, struct passwd **r) {
+    int (*f)(const char *, struct passwd *, char *, size_t, struct passwd **) =
+        dlsym(RTLD_NEXT, "getpwnam_r");
+    if (!f) { *r = NULL; return ENOENT; }
+    return f(n, p, b, l, r);
+}
+static struct passwd *fallback_getpwuid(uid_t u) {
+    struct passwd *(*f)(uid_t) = dlsym(RTLD_NEXT, "getpwuid");
+    return f ? f(u) : NULL;
+}
+static int fallback_getpwuid_r(uid_t u, struct passwd *p,
+                                char *b, size_t l, struct passwd **r) {
+    int (*f)(uid_t, struct passwd *, char *, size_t, struct passwd **) =
+        dlsym(RTLD_NEXT, "getpwuid_r");
+    if (!f) { *r = NULL; return ENOENT; }
+    return f(u, p, b, l, r);
+}
+static struct group *fallback_getgrnam(const char *n) {
+    struct group *(*f)(const char *) = dlsym(RTLD_NEXT, "getgrnam");
+    return f ? f(n) : NULL;
+}
+static int fallback_getgrnam_r(const char *n, struct group *g,
+                                char *b, size_t l, struct group **r) {
+    int (*f)(const char *, struct group *, char *, size_t, struct group **) =
+        dlsym(RTLD_NEXT, "getgrnam_r");
+    if (!f) { *r = NULL; return ENOENT; }
+    return f(n, g, b, l, r);
+}
+static struct group *fallback_getgrgid(gid_t id) {
+    struct group *(*f)(gid_t) = dlsym(RTLD_NEXT, "getgrgid");
+    return f ? f(id) : NULL;
+}
+static int fallback_getgrgid_r(gid_t id, struct group *g,
+                                char *b, size_t l, struct group **r) {
+    int (*f)(gid_t, struct group *, char *, size_t, struct group **) =
+        dlsym(RTLD_NEXT, "getgrgid_r");
+    if (!f) { *r = NULL; return ENOENT; }
+    return f(id, g, b, l, r);
+}
+
+#else /* NSS_FORWARD_TESTING */
+
+/* テスト用: fallback が実際に呼ばれたか検証するためのカウンター */
+int nss_forward_fallback_count = 0;
+
+static struct passwd *fallback_getpwnam(const char *n)
+    { (void)n; nss_forward_fallback_count++; return NULL; }
+static int fallback_getpwnam_r(const char *n, struct passwd *p,
+                                char *b, size_t l, struct passwd **r)
+    { (void)n; (void)p; (void)b; (void)l;
+      nss_forward_fallback_count++; *r = NULL; return ENOENT; }
+static struct passwd *fallback_getpwuid(uid_t u)
+    { (void)u; nss_forward_fallback_count++; return NULL; }
+static int fallback_getpwuid_r(uid_t u, struct passwd *p,
+                                char *b, size_t l, struct passwd **r)
+    { (void)u; (void)p; (void)b; (void)l;
+      nss_forward_fallback_count++; *r = NULL; return ENOENT; }
+static struct group *fallback_getgrnam(const char *n)
+    { (void)n; nss_forward_fallback_count++; return NULL; }
+static int fallback_getgrnam_r(const char *n, struct group *g,
+                                char *b, size_t l, struct group **r)
+    { (void)n; (void)g; (void)b; (void)l;
+      nss_forward_fallback_count++; *r = NULL; return ENOENT; }
+static struct group *fallback_getgrgid(gid_t id)
+    { (void)id; nss_forward_fallback_count++; return NULL; }
+static int fallback_getgrgid_r(gid_t id, struct group *g,
+                                char *b, size_t l, struct group **r)
+    { (void)id; (void)g; (void)b; (void)l;
+      nss_forward_fallback_count++; *r = NULL; return ENOENT; }
+
+#endif /* NSS_FORWARD_TESTING */
+
+/* ------------------------------------------------------------------ */
 /* getpwnam / getpwnam_r                                               */
 /* ------------------------------------------------------------------ */
 
@@ -217,11 +312,15 @@ struct passwd *getpwnam(const char *name)
 {
     char path[256];
     snprintf(path, sizeof(path), "/passwd/%s", name);
-    if (http_get(proxy_url(), path, http_body, sizeof(http_body)) < 0)
-        return NULL;
-    if (parse_passwd(http_body, &pw_result, pw_buf, sizeof(pw_buf)) < 0)
-        return NULL;
-    return &pw_result;
+    int status = http_get(proxy_url(), path, http_body, sizeof(http_body));
+    if (status == 200) {
+        if (parse_passwd(http_body, &pw_result, pw_buf, sizeof(pw_buf)) < 0)
+            return NULL;
+        return &pw_result;
+    }
+    if (status == 404)
+        return fallback_getpwnam(name);
+    return NULL;
 }
 
 int getpwnam_r(const char *name, struct passwd *pwd,
@@ -230,14 +329,17 @@ int getpwnam_r(const char *name, struct passwd *pwd,
     char path[256];
     snprintf(path, sizeof(path), "/passwd/%s", name);
     char body[HTTP_BUF];
-    if (http_get(proxy_url(), path, body, sizeof(body)) < 0) {
-        *result = NULL; return ENOENT;
+    int status = http_get(proxy_url(), path, body, sizeof(body));
+    if (status == 200) {
+        if (parse_passwd(body, pwd, buf, buflen) < 0) {
+            *result = NULL; return ERANGE;
+        }
+        *result = pwd;
+        return 0;
     }
-    if (parse_passwd(body, pwd, buf, buflen) < 0) {
-        *result = NULL; return ERANGE;
-    }
-    *result = pwd;
-    return 0;
+    if (status == 404)
+        return fallback_getpwnam_r(name, pwd, buf, buflen, result);
+    *result = NULL; return ENOENT;
 }
 
 /* ------------------------------------------------------------------ */
@@ -248,11 +350,15 @@ struct passwd *getpwuid(uid_t uid)
 {
     char path[256];
     snprintf(path, sizeof(path), "/passwd/uid/%lu", (unsigned long)uid);
-    if (http_get(proxy_url(), path, http_body, sizeof(http_body)) < 0)
-        return NULL;
-    if (parse_passwd(http_body, &pw_result, pw_buf, sizeof(pw_buf)) < 0)
-        return NULL;
-    return &pw_result;
+    int status = http_get(proxy_url(), path, http_body, sizeof(http_body));
+    if (status == 200) {
+        if (parse_passwd(http_body, &pw_result, pw_buf, sizeof(pw_buf)) < 0)
+            return NULL;
+        return &pw_result;
+    }
+    if (status == 404)
+        return fallback_getpwuid(uid);
+    return NULL;
 }
 
 int getpwuid_r(uid_t uid, struct passwd *pwd,
@@ -261,14 +367,17 @@ int getpwuid_r(uid_t uid, struct passwd *pwd,
     char path[256];
     snprintf(path, sizeof(path), "/passwd/uid/%lu", (unsigned long)uid);
     char body[HTTP_BUF];
-    if (http_get(proxy_url(), path, body, sizeof(body)) < 0) {
-        *result = NULL; return ENOENT;
+    int status = http_get(proxy_url(), path, body, sizeof(body));
+    if (status == 200) {
+        if (parse_passwd(body, pwd, buf, buflen) < 0) {
+            *result = NULL; return ERANGE;
+        }
+        *result = pwd;
+        return 0;
     }
-    if (parse_passwd(body, pwd, buf, buflen) < 0) {
-        *result = NULL; return ERANGE;
-    }
-    *result = pwd;
-    return 0;
+    if (status == 404)
+        return fallback_getpwuid_r(uid, pwd, buf, buflen, result);
+    *result = NULL; return ENOENT;
 }
 
 /* ------------------------------------------------------------------ */
@@ -279,11 +388,15 @@ struct group *getgrnam(const char *name)
 {
     char path[256];
     snprintf(path, sizeof(path), "/group/%s", name);
-    if (http_get(proxy_url(), path, http_body, sizeof(http_body)) < 0)
-        return NULL;
-    if (parse_group(http_body, &gr_result, gr_buf, sizeof(gr_buf), NULL, 0) < 0)
-        return NULL;
-    return &gr_result;
+    int status = http_get(proxy_url(), path, http_body, sizeof(http_body));
+    if (status == 200) {
+        if (parse_group(http_body, &gr_result, gr_buf, sizeof(gr_buf), NULL, 0) < 0)
+            return NULL;
+        return &gr_result;
+    }
+    if (status == 404)
+        return fallback_getgrnam(name);
+    return NULL;
 }
 
 int getgrnam_r(const char *name, struct group *grp,
@@ -292,14 +405,17 @@ int getgrnam_r(const char *name, struct group *grp,
     char path[256];
     snprintf(path, sizeof(path), "/group/%s", name);
     char body[HTTP_BUF];
-    if (http_get(proxy_url(), path, body, sizeof(body)) < 0) {
-        *result = NULL; return ENOENT;
+    int status = http_get(proxy_url(), path, body, sizeof(body));
+    if (status == 200) {
+        if (parse_group(body, grp, buf, buflen, NULL, 0) < 0) {
+            *result = NULL; return ERANGE;
+        }
+        *result = grp;
+        return 0;
     }
-    if (parse_group(body, grp, buf, buflen, NULL, 0) < 0) {
-        *result = NULL; return ERANGE;
-    }
-    *result = grp;
-    return 0;
+    if (status == 404)
+        return fallback_getgrnam_r(name, grp, buf, buflen, result);
+    *result = NULL; return ENOENT;
 }
 
 /* ------------------------------------------------------------------ */
@@ -310,11 +426,15 @@ struct group *getgrgid(gid_t gid)
 {
     char path[256];
     snprintf(path, sizeof(path), "/group/gid/%lu", (unsigned long)gid);
-    if (http_get(proxy_url(), path, http_body, sizeof(http_body)) < 0)
-        return NULL;
-    if (parse_group(http_body, &gr_result, gr_buf, sizeof(gr_buf), NULL, 0) < 0)
-        return NULL;
-    return &gr_result;
+    int status = http_get(proxy_url(), path, http_body, sizeof(http_body));
+    if (status == 200) {
+        if (parse_group(http_body, &gr_result, gr_buf, sizeof(gr_buf), NULL, 0) < 0)
+            return NULL;
+        return &gr_result;
+    }
+    if (status == 404)
+        return fallback_getgrgid(gid);
+    return NULL;
 }
 
 int getgrgid_r(gid_t gid, struct group *grp,
@@ -323,12 +443,15 @@ int getgrgid_r(gid_t gid, struct group *grp,
     char path[256];
     snprintf(path, sizeof(path), "/group/gid/%lu", (unsigned long)gid);
     char body[HTTP_BUF];
-    if (http_get(proxy_url(), path, body, sizeof(body)) < 0) {
-        *result = NULL; return ENOENT;
+    int status = http_get(proxy_url(), path, body, sizeof(body));
+    if (status == 200) {
+        if (parse_group(body, grp, buf, buflen, NULL, 0) < 0) {
+            *result = NULL; return ERANGE;
+        }
+        *result = grp;
+        return 0;
     }
-    if (parse_group(body, grp, buf, buflen, NULL, 0) < 0) {
-        *result = NULL; return ERANGE;
-    }
-    *result = grp;
-    return 0;
+    if (status == 404)
+        return fallback_getgrgid_r(gid, grp, buf, buflen, result);
+    *result = NULL; return ENOENT;
 }

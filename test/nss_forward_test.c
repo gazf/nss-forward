@@ -36,7 +36,7 @@ static int http_get(const char *base_url, const char *path,
     else if (strcmp(path, "/passwd/uid/1001") == 0)
         body = "alice:x:1001:100:Alice Smith:/home/alice:/bin/bash";
     else if (strcmp(path, "/passwd/minimal") == 0)
-        /* gecos・home・shell が空のエントリ (フォールバック確認) */
+        /* gecos・home・shell が空のエントリ */
         body = "minimal:x:9999:0:::";
     else if (strcmp(path, "/group/staff") == 0)
         body = "staff:x:100:alice,bob,carol";
@@ -44,13 +44,13 @@ static int http_get(const char *base_url, const char *path,
         body = "staff:x:100:alice,bob,carol";
     else if (strcmp(path, "/group/empty") == 0)
         body = "empty:x:200:";
-    /* それ以外は 404 相当 → -1 */
+    /* それ以外は 404 */
 
-    if (!body) return -1;
+    if (!body) return 404;
     size_t len = strlen(body);
     if (len >= buf_len) return -1;
     memcpy(buf, body, len + 1);
-    return (int)len;
+    return 200;
 }
 
 /* ------------------------------------------------------------------ */
@@ -79,6 +79,56 @@ static int g_fail = 0;
 /* ------------------------------------------------------------------ */
 /* テストケース                                                         */
 /* ------------------------------------------------------------------ */
+
+/*
+ * HTTP 404 のときフォールバック関数が呼ばれることを検証する。
+ * テストモードの fallback は nss_forward_fallback_count をインクリメントして
+ * NULL / ENOENT を返すスタブ。実運用では dlsym(RTLD_NEXT) が /etc/passwd を読む。
+ */
+extern int nss_forward_fallback_count;
+
+static void test_fallback_on_404(void)
+{
+    puts("404 フォールバック");
+
+    struct passwd pw;
+    char buf[1024];
+    struct passwd *result;
+    struct group  gr;
+    struct group  *grp;
+
+    nss_forward_fallback_count = 0;
+    getpwnam("nobody");
+    CHECK(nss_forward_fallback_count == 1, "getpwnam: 404 で fallback 呼び出し");
+
+    nss_forward_fallback_count = 0;
+    getpwuid(0);
+    CHECK(nss_forward_fallback_count == 1, "getpwuid: 404 で fallback 呼び出し");
+
+    nss_forward_fallback_count = 0;
+    getpwnam_r("nobody", &pw, buf, sizeof(buf), &result);
+    CHECK(nss_forward_fallback_count == 1, "getpwnam_r: 404 で fallback 呼び出し");
+
+    nss_forward_fallback_count = 0;
+    getpwuid_r(0, &pw, buf, sizeof(buf), &result);
+    CHECK(nss_forward_fallback_count == 1, "getpwuid_r: 404 で fallback 呼び出し");
+
+    nss_forward_fallback_count = 0;
+    getgrnam("root");
+    CHECK(nss_forward_fallback_count == 1, "getgrnam: 404 で fallback 呼び出し");
+
+    nss_forward_fallback_count = 0;
+    getgrgid(0);
+    CHECK(nss_forward_fallback_count == 1, "getgrgid: 404 で fallback 呼び出し");
+
+    nss_forward_fallback_count = 0;
+    getgrnam_r("root", &gr, buf, sizeof(buf), &grp);
+    CHECK(nss_forward_fallback_count == 1, "getgrnam_r: 404 で fallback 呼び出し");
+
+    nss_forward_fallback_count = 0;
+    getgrgid_r(0, &gr, buf, sizeof(buf), &grp);
+    CHECK(nss_forward_fallback_count == 1, "getgrgid_r: 404 で fallback 呼び出し");
+}
 
 static void test_getpwnam(void)
 {
@@ -242,6 +292,7 @@ int main(void)
     test_getgrnam_r();
     test_getgrgid_r();
     test_empty_group_members();
+    test_fallback_on_404();
 
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;

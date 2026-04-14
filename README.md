@@ -84,6 +84,10 @@ services:
 
 `uidNumber` 属性がない場合、`sambaSID` の RID から `10000 + RID` を uid として導出します。
 
+### フォールバック動作
+
+LDAP にユーザー/グループが存在しない場合 (HTTP 404)、`libnss_forward.so` は `dlsym(RTLD_NEXT, ...)` で元の libc 実装を呼び出します。`root` や `nobody` など `/etc/passwd` / `/etc/group` に定義されたシステムユーザーは通常どおり解決されます。
+
 ## ビルド・テスト
 
 ```sh
