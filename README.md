@@ -89,13 +89,11 @@ services:
 LDAP にユーザーが存在しない場合 (HTTP 404) や Deno サーバーが未起動・到達不能の場合、`libnss_forward.so` は `dlsym(RTLD_NEXT, ...)` で元の libc 実装を呼び出します。`root` や `nobody` など `/etc/passwd` / `/etc/group` に定義されたシステムユーザーはコンテナ起動順序に依らず通常どおり解決されます。
 
 ```mermaid
-flowchart TD
+flowchart LR
     A[getpwnam / getpwuid\ngetgrnam / getgrgid] --> B[HTTP GET to Deno sidecar]
-    B -->|200 OK| C[レスポンスをパース]
-    C --> D[struct passwd / group を返す]
-    B -->|404 Not Found\nネットワークエラー| E["dlsym(RTLD_NEXT, ...)"]
-    E --> F[libc — /etc/passwd / /etc/group]
-    F --> G[結果を返す]
+    B -->|200 OK| C[レスポンスをパース\n→ struct を返す]
+    B -->|404 / ネットワークエラー| E["dlsym(RTLD_NEXT, ...)"]
+    E --> F[libc\n/etc/passwd・/etc/group\n→ struct を返す]
 ```
 
 ## ビルド・テスト
