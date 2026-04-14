@@ -1,0 +1,147 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  test:
+    name: Test
+    uses: ./.github/workflows/test.yml
+
+  build-so:
+    needs: test
+    name: Build libnss_forward.so
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build .so (Alpine/musl)
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: Dockerfile.build
+          outputs: type=local,dest=dist
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: libnss_forward-so
+          path: dist/libnss_forward.so
+
+  release:
+    name: Create GitHub Release
+    needs: build-so
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download .so artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: libnss_forward-so
+          path: dist
+
+      - name: Create Release and upload asset
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/libnss_forward.so
+          generate_release_notes: true
+
+  push-server-image:
+    name: Push Deno server image to GHCR
+    needs: build-so
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}-server
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest
+
+      - name: Build and push server image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: Dockerfile.server
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  push-so-image:
+    name: Push .so OCI image to GHCR
+    needs: build-so
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download .so artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: libnss_forward-so
+          path: dist
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest
+
+      # Build a minimal FROM scratch image containing only the .so
+      - name: Write inline Dockerfile for .so image
+        run: |
+          cat > dist/Dockerfile <<'EOF'
+          FROM scratch
+          COPY libnss_forward.so /libnss_forward.so
+          EOF
+
+      - name: Build and push .so OCI image
+        uses: docker/build-push-action@v5
+        with:
+          context: dist
+          file: dist/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

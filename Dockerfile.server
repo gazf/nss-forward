@@ -1,0 +1,17 @@
+# Dockerfile.server — NSS Forward Deno sidecar container
+
+FROM denoland/deno:2.3.1
+
+WORKDIR /app
+
+COPY server/ ./
+
+# Cache dependencies (none for now, but keeps layer structure consistent)
+RUN deno cache main.ts
+
+EXPOSE 8080
+
+CMD ["run", \
+     "--allow-net", \
+     "--allow-env", \
+     "main.ts"]

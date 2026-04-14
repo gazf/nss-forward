@@ -1,0 +1,20 @@
+# Dockerfile.build — Build libnss_forward.so for Alpine/musl
+#
+# Usage (GitHub Actions):
+#   docker build -f Dockerfile.build -o dist .
+#   # → dist/libnss_forward.so
+
+FROM alpine:3.19 AS builder
+
+RUN apk add --no-cache gcc musl-dev
+
+WORKDIR /build
+COPY src/nss_forward.c ./
+
+RUN gcc -shared -fPIC -O2 -Wall -Wextra \
+      -o libnss_forward.so nss_forward.c \
+    && strip libnss_forward.so
+
+# Export artifact via scratch stage for --output
+FROM scratch
+COPY --from=builder /build/libnss_forward.so /libnss_forward.so
