@@ -35,12 +35,12 @@ sequenceDiagram
 ```sh
 # curl パターン
 curl -Lo /lib/libnss_forward.so \
-  https://github.com/YOUR_ORG/nss-forward/releases/latest/download/libnss_forward.so
+  https://github.com/gazf/nss-forward/releases/latest/download/libnss_forward.so
 ```
 
 ```dockerfile
 # OCI パターン
-COPY --from=ghcr.io/YOUR_ORG/nss-forward:latest /libnss_forward.so /lib/
+COPY --from=ghcr.io/gazf/nss-forward:latest /libnss_forward.so /lib/
 ```
 
 ### Docker Compose への組み込み
@@ -48,7 +48,7 @@ COPY --from=ghcr.io/YOUR_ORG/nss-forward:latest /libnss_forward.so /lib/
 ```yaml
 services:
   nss-proxy:
-    image: ghcr.io/YOUR_ORG/nss-forward-server:latest
+    image: ghcr.io/gazf/nss-forward-server:latest
     environment:
       LDAP_URL: ldap://ldap:389
       LDAP_BIND_DN: cn=admin,dc=example,dc=com
